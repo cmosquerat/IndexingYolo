@@ -1,67 +1,72 @@
-# Importamos las bibliotecas necesarias
 import streamlit as st
-from indexing_utp import *
-import tempfile
-from sahi import AutoDetectionModel
-from sahi.predict import get_prediction, get_sliced_prediction, predict
+import cv2
+import torch
+import clip
+from PIL import Image
+import time
+import pandas as pd
+import plotly.express as px
+
+# Carga el modelo CLIP y la función de preprocesamiento
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, preprocess = clip.load("ViT-B/32", device=device)
+
+def get_classification(frame):
+    image = preprocess(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))).unsqueeze(0).to(device)
+    texto = clip.tokenize(["violence", "pedestrian"]).to(device)
+    with torch.no_grad():
+        logits_per_image, _ = model(image, texto)
+        probabilidades = logits_per_image.softmax(dim=-1).cpu().numpy()
+    return probabilidades[0][0], probabilidades[0][1]
+
+st.title("Clasificación de Transmisión UTP")
+
+url_rtsp = st.text_input("Introduce URL RTSP/RTMP:", "")
+
+# Crea un DataFrame para almacenar los puntajes de violencia y las marcas de tiempo
+df = pd.DataFrame(columns=["Marca de Tiempo", "Probabilidad de Violencia"])
+
+# Configura los espacios reservados antes del bucle
+col1, col2 = st.columns(2)
+
+with col1:
+    espacio_col1 = st.empty()
+    espacio_col3 = st.empty()
+
+with col2:
+    espacio_col2 = st.empty()
 
 
-detection_model = AutoDetectionModel.from_pretrained(
-    model_type='yolov8',
-    model_path="best.pt",
-    confidence_threshold=0.7,
-    device="cpu", # or 'cuda:0'
-)
+espacio_grafico = st.empty()
 
-# Establecemos el título de la aplicación Streamlit
-st.title("Prueba Indexación + Detección UTP")
+if url_rtsp:
+    cap = cv2.VideoCapture(url_rtsp)
+    cuenta_frames = 0
 
-# Permitimos al usuario subir un archivo de video al servidor
-uploaded_file = st.file_uploader("Sube un video", type=['mp4'])
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            st.warning("Error al leer el frame de la transmisión RTSP.")
+            break
 
-# Creamos una lista de opciones de videos para seleccionar
-video_options = ["Peleas.mp4","Armas.mp4","Disparos.mp4"]
-# Permitimos al usuario seleccionar un video de prueba desde las opciones
-selected_video = st.selectbox("O selecciona un video de prueba", video_options)
+        cuenta_frames += 1
+        if cuenta_frames % 10 == 0:
+            prob_violencia, prob_no_violencia = get_classification(frame)
 
-# Campo de entrada para que el usuario introduzca texto para buscar en el video
-user_input = st.text_input("Introduce algún texto para buscar aquí:")
+            espacio_col1.write(f"Probabilidad de Violencia: {prob_violencia:.2f}")
 
-# Creamos un botón "Ejecutar" para iniciar el proceso de búsqueda
-if st.button("Ejecutar"):
-   # Verificamos que el campo de texto no esté vacío
-   if len(user_input) != 0:
-       # Si el usuario ha subido un archivo de video, lo usamos
-       if uploaded_file is not None: 
-           video = uploaded_file
-           # Creamos un archivo temporal para guardar el video
-           tfile = tempfile.NamedTemporaryFile(delete=False)
-           tfile.write(video.read())
-           location = tfile.name
-       else:
-           # Si no, usamos el video seleccionado de la lista de opciones
-           video = selected_video
-           location = video
-       # Mostramos el video en la aplicación
-       st.video(video)
-       # Extraemos los fotogramas del video y obtenemos su tasa de fotogramas por segundo
-       video_frames, fps = extract_frames(location, 15)
-       # Generamos las características del video para la búsqueda
-       video_features, model, device = generate_video_features(video_frames)
-       # Buscamos en el video basándonos en el texto introducido por el usuario
-       frames, seconds, fig = search_video(user_input, video_frames, video_features, model, device, 15, fps)
-       # Mostramos un gráfico relacionado con los resultados de la búsqueda
-       st.plotly_chart(fig)
-       # Mostramos los fotogramas resultantes de la búsqueda
-       for frame, seconds in zip(frames, seconds):
-           result = get_sliced_prediction(
-                frame,
-                detection_model,
-                slice_height = 256,
-                slice_width = 256,
-                overlap_height_ratio = 0.2,
-                overlap_width_ratio = 0.2
-            )
-           result.export_visuals("Resultados/")
-           
-           st.image("Resultados/prediction_visual.png")
+            # Añade la marca de tiempo y la probabilidad de violencia al DataFrame
+            marca_tiempo = time.strftime("%Y-%m-%d %H:%M:%S")
+            df = pd.concat([df, pd.DataFrame({"Marca de Tiempo": [marca_tiempo], "Probabilidad de Violencia": [prob_violencia]})], ignore_index=True)
+
+            # Actualiza el gráfico dinámico de tiempo
+            fig = px.line(df, x="Marca de Tiempo", y="Probabilidad de Violencia", title="Probabilidad de Violencia a lo Largo del Tiempo")
+            espacio_grafico.plotly_chart(fig, use_container_width=True, height=200)
+
+            espacio_col2.image(frame, channels="BGR", use_column_width=True, width=300)
+            espacio_col3.write(f"Probabilidad Sin Violencia: {prob_no_violencia:.2f}")
+
+            # Duerme por un breve momento para permitir que Streamlit actualice la UI
+            time.sleep(0.1)
+
+    cap.release()
