@@ -1,0 +1,13 @@
+{
+    "gmail": {
+        "sender_email": "utpanomaly@gmail.com",
+        "password": "4556907Quique",
+        "smtp_server": "smtp.gmail.com",
+        "smtp_port": 587
+    },
+    "email_settings": {
+        "recipient_email": "recipient@example.com",
+        "subject": "RTSP Alert",
+        "body": "An alert has been triggered by your RTSP camera."
+    }
+}
